@@ -13,23 +13,23 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-echo -e "${YELLOW}[1/9] Установка зависимостей...${NC}"
+echo -e "${YELLOW}[1/10] Установка зависимостей...${NC}"
 apt-get update && apt-get install -y jq nftables git curl wget
 
-echo -e "${YELLOW}[2/9] Установка Docker...${NC}"
+echo -e "${YELLOW}[2/10] Установка Docker...${NC}"
 if ! command -v docker &> /dev/null; then
     curl -fsSL https://get.docker.com | sh
     systemctl enable docker
     systemctl start docker
 fi
 
-echo -e "${YELLOW}[3/9] Установка Docker Compose...${NC}"
+echo -e "${YELLOW}[3/10] Установка Docker Compose...${NC}"
 if ! command -v docker-compose &> /dev/null; then
     curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
     chmod +x /usr/local/bin/docker-compose
 fi
 
-echo -e "${YELLOW}[4/9] Клонирование репозитория...${NC}"
+echo -e "${YELLOW}[4/10] Клонирование репозитория...${NC}"
 cd /opt
 rm -rf vlesstgctl
 git clone https://github.com/Demistus/VlessTgCtl.git vlesstgctl
@@ -40,7 +40,7 @@ if [ -f requirements.txt ] && [ ! -f tgctl/requirements.txt ]; then
     cp requirements.txt tgctl/
 fi
 
-echo -e "${YELLOW}[5/9] Настройка бота...${NC}"
+echo -e "${YELLOW}[5/10] Настройка бота...${NC}"
 echo "Введите BOT_TOKEN:"
 read -r BOT_TOKEN </dev/tty
 echo "Введите ADMIN_IDS (Telegram ID, можно через запятую):"
@@ -51,12 +51,12 @@ BOT_TOKEN=$BOT_TOKEN
 ADMIN_IDS=$ADMIN_IDS
 ENV_EOF
 
-echo -e "${YELLOW}[6/9] Создание директорий...${NC}"
+echo -e "${YELLOW}[6/10] Создание директорий...${NC}"
 mkdir -p /opt/vlesstgctl/data
 mkdir -p /opt/vlesstgctl/stats
 mkdir -p /etc/sing-box
 
-echo -e "${YELLOW}[7/9] Установка конфига sing-box...${NC}"
+echo -e "${YELLOW}[7/10] Установка конфига sing-box...${NC}"
 if [ -f vless/config.json ]; then
     cp vless/config.json /etc/sing-box/config.json
 else
@@ -64,7 +64,7 @@ else
     exit 1
 fi
 
-echo -e "${YELLOW}[8/9] Настройка статистики...${NC}"
+echo -e "${YELLOW}[8/10] Настройка статистики...${NC}"
 # Ищем скрипт трафика
 if [ -f tgctl/services/traffic_nft.sh ]; then
     cp tgctl/services/traffic_nft.sh /opt/vlesstgctl/stats/traffic_nft.sh
@@ -105,7 +105,21 @@ systemctl daemon-reload
 systemctl enable traffic-stats.timer
 systemctl start traffic-stats.timer
 
-echo -e "${YELLOW}[9/9] Сборка и запуск контейнеров...${NC}"
+echo -e "${YELLOW}[9/10] Подготовка деинсталлятора...${NC}"
+cat > /opt/vlesstgctl/uninstall.sh << 'UNINSTALL'
+#!/bin/bash
+cd /opt/vlesstgctl && docker-compose down
+docker rmi vlesstgctl-sing-box:latest vlesstgctl-telegram-bot:latest
+docker builder prune -a -f
+rm -rf /opt/vlesstgctl /etc/sing-box
+systemctl disable --now traffic-stats.timer
+rm -f /etc/systemd/system/traffic-stats.{service,timer}
+systemctl daemon-reload
+echo "✅ Удалено"
+UNINSTALL
+chmod +x /opt/vlesstgctl/uninstall.sh
+
+echo -e "${YELLOW}[10/10] Сборка и запуск контейнеров...${NC}"
 cat > docker-compose.yml << 'DOCKER_EOF'
 version: '3.8'
 
@@ -152,19 +166,6 @@ docker-compose up -d
 sleep 5
 echo -e "${GREEN}✅ Статус контейнеров:${NC}"
 docker ps --format "table {{.Names}}\t{{.Status}}" | grep -E "sing-box|telegram-bot"
-
-cat > /opt/vlesstgctl/uninstall.sh << 'UNINSTALL'
-#!/bin/bash
-cd /opt/vlesstgctl && docker-compose down
-docker rmi vlesstgctl-sing-box:latest vlesstgctl-telegram-bot:latest
-docker builder prune -a -f
-rm -rf /opt/vlesstgctl /etc/sing-box
-systemctl disable --now traffic-stats.timer
-rm -f /etc/systemd/system/traffic-stats.{service,timer}
-systemctl daemon-reload
-echo "✅ Удалено"
-UNINSTALL
-chmod +x /opt/vlesstgctl/uninstall.sh
 
 echo ""
 echo "╔════════════════════════════════════════════════════════════════╗"
