@@ -84,6 +84,8 @@ After=docker.service
 [Service]
 Type=oneshot
 ExecStart=/opt/vlesstgctl/stats/traffic_nft.sh
+StandardOutput=journal
+StandardError=journal
 User=root
 EOF
 
@@ -102,6 +104,42 @@ EOF
 systemctl daemon-reload
 systemctl enable traffic-stats.timer
 systemctl start traffic-stats.timer
+
+echo "[7/8] Настройка nftables..."
+cat > /etc/nftables.conf << 'NFT_EOF'
+#!/usr/sbin/nft -f
+
+flush ruleset
+
+table ip filter {
+    chain input {
+        type filter hook input priority filter; policy drop;
+        
+        ct state established,related accept
+        iif lo accept
+        ip protocol icmp icmp type echo-request accept
+        tcp dport 22 accept
+        tcp dport {80, 443, 8080} accept
+        udp dport 443 accept
+        
+        log prefix "BLOCKED: " limit rate 5/minute
+        reject with icmp type port-unreachable
+    }
+    
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+        ct state established,related accept
+    }
+    
+    chain output {
+        type filter hook output priority filter; policy accept;
+    }
+}
+NFT_EOF
+
+nft -f /etc/nftables.conf
+systemctl enable nftables
+systemctl restart nftables
 
 echo -e "${YELLOW}[9/9] Сборка и запуск контейнеров...${NC}"
 cat > docker-compose.yml << 'DOCKER_EOF'
