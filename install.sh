@@ -118,10 +118,22 @@ services:
     cap_add:
       - NET_ADMIN
       - SYS_ADMIN
+      - NET_RAW
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=0
+      - net.ipv4.ip_forward=1
+      - net.ipv6.conf.all.forwarding=1
     volumes:
       - /etc/sing-box/config.json:/etc/sing-box/config.json:rw
       - /opt/vlesstgctl/data:/opt/vlesstgctl/data
       - /opt/vlesstgctl/stats:/opt/vlesstgctl/stats
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   telegram-bot:
     build:
@@ -138,6 +150,11 @@ services:
       - /etc/sing-box/config.json:/etc/sing-box/config.json:rw
       - /opt/vlesstgctl/data:/opt/vlesstgctl/data
       - /opt/vlesstgctl/stats:/opt/vlesstgctl/stats
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 DOCKER_EOF
 
 docker-compose down 2>/dev/null || true
