@@ -192,7 +192,8 @@ docker ps --format "table {{.Names}}\t{{.Status}}" | grep -E "sing-box|telegram-
 cat > /opt/vlesstgctl/uninstall.sh << 'UNINSTALL'
 #!/bin/bash
 cd /opt/vlesstgctl && docker-compose down
-docker rmi vlesstgctl_sing-box vlesstgctl_telegram-bot 2>/dev/null
+docker rmi vlesstgctl-sing-box:latest vlesstgctl-telegram-bot:latest
+docker builder prune -a -f
 rm -rf /opt/vlesstgctl /etc/sing-box
 systemctl disable --now traffic-stats.timer
 rm -f /etc/systemd/system/traffic-stats.{service,timer}
