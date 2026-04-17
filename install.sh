@@ -110,30 +110,18 @@ version: '3.8'
 services:
   sing-box:
     build:
-      context: .
-      dockerfile: vless/Dockerfile.vless
+      context: ./vless
+      dockerfile: Dockerfile.vless
     container_name: sing-box
     restart: unless-stopped
     network_mode: host
     cap_add:
       - NET_ADMIN
-      - SYS_ADMIN
-      - NET_RAW
-    devices:
-      - /dev/net/tun:/dev/net/tun
-    sysctls:
-      - net.ipv6.conf.all.disable_ipv6=0
-      - net.ipv4.ip_forward=1
-      - net.ipv6.conf.all.forwarding=1
     volumes:
-      - /etc/sing-box/config.json:/etc/sing-box/config.json:rw
-      - /opt/vlesstgctl/data:/opt/vlesstgctl/data
-      - /opt/vlesstgctl/stats:/opt/vlesstgctl/stats
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+      - /etc/sing-box:/etc/sing-box
+      - /var/lib/sing-box:/var/lib/sing-box
+      - /var/log/sing-box:/var/log/sing-box
+      - /dev/net/tun:/dev/net/tun
 
   telegram-bot:
     build:
@@ -141,20 +129,18 @@ services:
       dockerfile: Dockerfile.tgctl
     container_name: telegram-bot
     restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - /opt/vlesstgctl/stats:/opt/vlesstgctl/stats
+      - /etc/sing-box:/etc/sing-box:rw
+      - /usr/bin/docker:/usr/bin/docker
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       - sing-box
-    environment:
-      - BOT_TOKEN=${BOT_TOKEN}
-      - ADMIN_IDS=${ADMIN_IDS}
-    volumes:
-      - /etc/sing-box/config.json:/etc/sing-box/config.json:rw
-      - /opt/vlesstgctl/data:/opt/vlesstgctl/data
-      - /opt/vlesstgctl/stats:/opt/vlesstgctl/stats
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+
 DOCKER_EOF
 
 docker-compose down 2>/dev/null || true
