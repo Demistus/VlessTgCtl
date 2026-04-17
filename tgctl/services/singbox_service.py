@@ -1,0 +1,167 @@
+import json
+import asyncio
+import subprocess
+from pathlib import Path
+from typing import Dict, Any, List, Optional
+from config import Config
+from models import User, ServerConfig
+from utils.logger import logger
+from utils.locks import FileLock
+
+
+class SingBoxService:
+    """Service for managing sing-box configuration"""
+    
+    def __init__(self):
+        self.config_path = Config.SINGBOX_CONFIG
+        self.stats_path = Config.TRAFFIC_STATS_FILE
+        self.lock = FileLock(self.config_path)
+    
+    async def load_users(self) -> List[User]:
+        """Load users from sing-box config"""
+        if not self.config_path.exists():
+            return []
+        
+        try:
+            with self.lock.read_json() as config:
+                users = []
+                for inbound in config.get('inbounds', []):
+                    if inbound.get('type') == 'vless':
+                        for user_data in inbound.get('users', []):
+                            user = User(
+                                name=user_data.get('name'),
+                                uuid=user_data.get('uuid')
+                            )
+                            users.append(user)
+                
+                logger.info(f"Loaded {len(users)} users from config")
+                return users
+        except Exception as e:
+            logger.error(f"Failed to load users: {e}")
+            return []
+    
+    async def save_users(self, users: List[User]) -> bool:
+        """Save users to sing-box config"""
+        if not self.config_path.exists():
+            logger.error("Config file does not exist")
+            return False
+        
+        try:
+            with self.lock.read_json() as config:
+                # Update users in config
+                for inbound in config.get('inbounds', []):
+                    if inbound.get('type') == 'vless':
+                        inbound['users'] = [
+                            {
+                                'name': user.name,
+                                'uuid': user.uuid,
+                                'flow': 'xtls-rprx-vision'
+                            }
+                            for user in users
+                        ]
+                        break
+            
+            # Write back
+            with self.lock.write_json(config):
+                pass
+            
+            logger.info(f"Saved {len(users)} users to config")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save users: {e}")
+            return False
+    
+    async def add_user(self, user: User) -> tuple[bool, str]:
+        """Add user to configuration"""
+        try:
+            users = await self.load_users()
+            
+            # Check if user already exists
+            if any(u.name.lower() == user.name.lower() for u in users):
+                return False, "Пользователь с таким именем уже существует"
+            
+            users.append(user)
+            
+            if not await self.save_users(users):
+                return False, "Не удалось сохранить конфигурацию"
+            
+            await self.restart()
+            logger.info(f"User added: {user.name}")
+            return True, "Success"
+        except Exception as e:
+            logger.error(f"Failed to add user: {e}")
+            return False, str(e)
+    
+    async def remove_user(self, username: str) -> tuple[bool, str]:
+        """Remove user from configuration"""
+        try:
+            users = await self.load_users()
+            
+            user_to_remove = next(
+                (u for u in users if u.name.lower() == username.lower()),
+                None
+            )
+            
+            if not user_to_remove:
+                return False, "Пользователь не найден"
+            
+            users = [u for u in users if u.name.lower() != username.lower()]
+            
+            if not await self.save_users(users):
+                return False, "Не удалось сохранить конфигурацию"
+            
+            await self.restart()
+            logger.info(f"User removed: {username}")
+            return True, "Success"
+        except Exception as e:
+            logger.error(f"Failed to remove user: {e}")
+            return False, str(e)
+    
+    async def restart(self) -> bool:
+        """Restart sing-box with HUP signal"""
+        try:
+            process = await asyncio.create_subprocess_exec(
+                'docker', 'exec', 'sing-box', 'kill', '-HUP', '1',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            stdout, stderr = await process.communicate()
+            
+            if process.returncode == 0:
+                logger.info("Sing-box restarted successfully (HUP)")
+                return True
+            else:
+                logger.error(f"Failed to restart sing-box: {stderr.decode()}")
+                return False
+        except Exception as e:
+            logger.error(f"Error restarting sing-box: {e}")
+            return False
+    
+    async def get_server_config(self) -> ServerConfig:
+        """Get server configuration from sing-box config"""
+        config = ServerConfig(
+            domain=Config.DEFAULT_DOMAIN,
+            port=Config.DEFAULT_PORT,
+            public_key=Config.DEFAULT_PUBLIC_KEY,
+            short_id='',
+            vless_sni=Config.DEFAULT_VLESS_SNI
+        )
+        
+        if not self.config_path.exists():
+            return config
+        
+        try:
+            with self.lock.read_json() as data:
+                for inbound in data.get('inbounds', []):
+                    if inbound.get('type') == 'vless':
+                        tls = inbound.get('tls', {})
+                        reality = tls.get('reality', {})
+                        
+                        config.short_id = reality.get('short_id', '')
+                        config.vless_sni = tls.get('server_name', config.vless_sni)
+                        break
+        except Exception as e:
+            logger.error(f"Failed to load server config: {e}")
+        
+        return config
