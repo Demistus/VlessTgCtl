@@ -1,5 +1,5 @@
 #!/bin/bash
-set -euo pipefail  # Безопасный режим: ошибки прерывают скрипт, неиспользуемые переменные - ошибка
+set -euo pipefail
 
 export PATH=$PATH:/usr/sbin:/usr/local/sbin
 
@@ -13,7 +13,6 @@ TOTAL_STATE_FILE="/opt/vlesstgctl/stats/user_total_state.txt"
 LAST_ACTIVE_FILE="/opt/vlesstgctl/stats/user_last_active.txt"
 
 # === 1. ПОЛУЧАЕМ ЛОГИ И ОЧИЩАЕМ ANSI ===
-# Увеличил буфер до 20000 строк для активного трафика
 LOGS=$(docker logs sing-box --tail 5000 2>&1 | sed -E 's/\x1b\[[0-9;]*m//g')
 
 # === 2. МАППИНГ IP -> USER ПО ID ===
@@ -41,7 +40,8 @@ done <<< "$LOGS"
 declare -A IP_TO_USER
 for id in "${!ID_TO_IP[@]}"; do
     ip="${ID_TO_IP[$id]}"
-    user="${ID_TO_USER[$id]}"
+    # ИСПРАВЛЕНО: проверяем существование ключа с :- синтаксисом
+    user="${ID_TO_USER[$id]:-}"
     if [[ -n "$ip" && -n "$user" ]]; then
         IP_TO_USER["$ip"]="$user"
     fi
@@ -49,7 +49,10 @@ done
 
 if [[ -f "$MAP_FILE" ]]; then
     while IFS=':' read -r ip user; do
-        [[ -z "${IP_TO_USER[$ip]}" ]] && IP_TO_USER["$ip"]="$user"
+        # ИСПРАВЛЕНО: используем безопасную проверку
+        if [[ -z "${IP_TO_USER[$ip]:-}" ]]; then
+            IP_TO_USER["$ip"]="$user"
+        fi
     done < "$MAP_FILE"
 fi
 
@@ -58,29 +61,24 @@ for ip in "${!IP_TO_USER[@]}"; do
     echo "$ip:${IP_TO_USER[$ip]}" >> "$MAP_FILE"
 done
 
-# === 2.5. ОЧИСТКА СТАРЫХ ЦЕПОЧЕК (GARBAGE COLLECTION) ===
-# Получаем список всех существующих цепочек traffic_*
-ALL_CHAINS=$(/usr/sbin/nft list chains inet traffic 2>/dev/null | grep -oP 'traffic_(in|out)_[^\s]+' || true)
-
-for chain in $ALL_CHAINS; do
-    # Извлекаем IP из имени цепочки
-    # Имена цепочек: traffic_in_username_1_2_3_4 или traffic_out_username_1_2_3_4
-    # Нам нужно восстановить IP из последней части
+# === 2.5. ОЧИСТКА СТАРЫХ ЦЕПОЧЕК ===
+# Проверяем существование таблицы
+if /usr/sbin/nft list tables inet 2>/dev/null | grep -q "^table inet traffic$"; then
+    ALL_CHAINS=$(/usr/sbin/nft list chains inet traffic 2>/dev/null | grep -oP 'traffic_(in|out)_[^\s]+' || true)
     
-    # Получаем суффикс после последнего подчеркивания
-    suffix="${chain##*_}"
-    # Пытаемся восстановить IP: 1_2_3_4 -> 1.2.3.4
-    ip_candidate=$(echo "$suffix" | tr '_' '.')
-    
-    # Проверяем, является ли это валидным IP
-    if [[ "$ip_candidate" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        # Если этого IP нет в текущем маппинге -> удаляем цепочку
-        if [[ -z "${IP_TO_USER[$ip_candidate]:-}" ]]; then
-            /usr/sbin/nft delete chain inet traffic "$chain" 2>/dev/null && \
-                echo "Deleted old chain: $chain" >> /tmp/traffic_nft_cleanup.log
+    for chain in $ALL_CHAINS; do
+        # Извлекаем IP из имени цепочки
+        suffix="${chain##*_}"
+        ip_candidate=$(echo "$suffix" | tr '_' '.')
+        
+        if [[ "$ip_candidate" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            if [[ -z "${IP_TO_USER[$ip_candidate]:-}" ]]; then
+                /usr/sbin/nft delete chain inet traffic "$chain" 2>/dev/null && \
+                    echo "Deleted old chain: $chain" >> /tmp/traffic_nft_cleanup.log
+            fi
         fi
-    fi
-done
+    done
+fi
 
 # === 3. NFT: СОЗДАЁМ ЦЕПОЧКИ ===
 /usr/sbin/nft add table inet traffic 2>/dev/null
@@ -137,12 +135,12 @@ for ip in "${!IP_TO_USER[@]}"; do
     up=0
     down=0
     
-    in_rule=$(/usr/sbin/nft list chain inet traffic "$chain_in" 2>/dev/null | grep "ip saddr $ip")
+    in_rule=$(/usr/sbin/nft list chain inet traffic "$chain_in" 2>/dev/null | grep "ip saddr $ip" || true)
     if [[ -n "$in_rule" && "$in_rule" =~ bytes\ ([0-9]+) ]]; then
         up="${BASH_REMATCH[1]}"
     fi
     
-    out_rule=$(/usr/sbin/nft list chain inet traffic "$chain_out" 2>/dev/null | grep "ip daddr $ip")
+    out_rule=$(/usr/sbin/nft list chain inet traffic "$chain_out" 2>/dev/null | grep "ip daddr $ip" || true)
     if [[ -n "$out_rule" && "$out_rule" =~ bytes\ ([0-9]+) ]]; then
         down="${BASH_REMATCH[1]}"
     fi
@@ -166,7 +164,6 @@ for user in "${!CURRENT_NFT_UP[@]}"; do
     delta_up=$((current_up - prev_up))
     delta_down=$((current_down - prev_down))
     
-    # Защита от отрицательных значений (перезагрузка счетчиков)
     [[ $delta_up -lt 0 ]] && delta_up=$current_up
     [[ $delta_down -lt 0 ]] && delta_down=$current_down
     
@@ -182,7 +179,6 @@ for user in "${!CURRENT_NFT_UP[@]}"; do
 done
 
 # === 8. СОХРАНЯЕМ СОСТОЯНИЯ NFT ===
-# Используем временный файл для атомарной записи
 TEMP_NFT_STATE="${NFT_STATE_FILE}.tmp"
 > "$TEMP_NFT_STATE"
 for user in "${!CURRENT_NFT_UP[@]}"; do
@@ -199,35 +195,26 @@ done
 mv "$TEMP_TOTAL_STATE" "$TOTAL_STATE_FILE"
 
 # === 10. ОБНОВЛЯЕМ last_active.txt ===
-# Используем flock для безопасной записи
 TEMP_LAST="/opt/vlesstgctl/stats/user_last_active.tmp"
 > "$TEMP_LAST"
 
-# Копируем старые записи, обновляя активных пользователей
 if [[ -f "$LAST_ACTIVE_FILE" ]]; then
-    # Используем flock для чтения
-    (
-        flock -s 200
-        while IFS=':' read -r user ts; do
-            if [[ -n "${HAD_ACTIVITY[$user]:-}" ]]; then
-                # Активный пользователь - обновляем timestamp
-                echo "$user:$(date +%s)" >> "$TEMP_LAST"
-            else
-                # Неактивный - оставляем старый
-                echo "$user:$ts" >> "$TEMP_LAST"
-            fi
-        done < "$LAST_ACTIVE_FILE"
-    ) 200>"$LAST_ACTIVE_FILE.lock"
+    # ИСПРАВЛЕНО: убираем вложенный flock, используем простой подход
+    while IFS=':' read -r user ts; do
+        if [[ -n "${HAD_ACTIVITY[$user]:-}" ]]; then
+            echo "$user:$(date +%s)" >> "$TEMP_LAST"
+        else
+            echo "$user:$ts" >> "$TEMP_LAST"
+        fi
+    done < "$LAST_ACTIVE_FILE"
 fi
 
-# Добавляем новых пользователей, которых нет в старом файле
 for user in "${!NEW_TOTAL_UP[@]}"; do
     if ! grep -q "^$user:" "$TEMP_LAST" 2>/dev/null; then
         echo "$user:$(date +%s)" >> "$TEMP_LAST"
     fi
 done
 
-# Атомарно заменяем файл
 mv "$TEMP_LAST" "$LAST_ACTIVE_FILE"
 
 # === 11. ВЫВОД JSON ===
@@ -240,7 +227,7 @@ mv "$TEMP_LAST" "$LAST_ACTIVE_FILE"
         else
             echo ","
         fi
-        # Экранируем спецсимволы в имени пользователя для JSON
+        # Экранируем спецсимволы
         user_escaped=$(printf "%s" "$user" | jq -R -r @json 2>/dev/null || echo "\"$user\"")
         printf '{"user":%s,"upload":%s,"download":%s,"total":%s}' \
             "$user_escaped" \
