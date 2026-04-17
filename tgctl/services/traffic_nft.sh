@@ -210,7 +210,7 @@ mv "$TEMP_LAST" "$LAST_ACTIVE_FILE"
     done
     echo
     echo "]"
-} > /opt/singbox-stats/traffic.json
+} > /opt/vlesstgctl/stats/traffic.json
 
 flock -u 200
 rm -f "$LOCK_FILE"
