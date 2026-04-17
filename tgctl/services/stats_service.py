@@ -14,7 +14,7 @@ class TrafficStatsService:
     
     def __init__(self):
         self.stats_file = Config.TRAFFIC_STATS_FILE
-        self.last_active_file = Path("/opt/singbox-stats/user_last_active.txt")
+        self.last_active_file = Path("/opt/vlesstgctl/stats/user_last_active.txt")
         self.lock = FileLock(self.stats_file)
         self.cache = TTLCache(ttl=60)
     
