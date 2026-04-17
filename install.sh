@@ -153,42 +153,6 @@ sleep 5
 echo -e "${GREEN}✅ Статус контейнеров:${NC}"
 docker ps --format "table {{.Names}}\t{{.Status}}" | grep -E "sing-box|telegram-bot"
 
-echo "Настройка nftables..."
-cat > /etc/nftables.conf << 'NFT_EOF'
-#!/usr/sbin/nft -f
-
-flush ruleset
-
-table ip filter {
-    chain input {
-        type filter hook input priority filter; policy drop;
-        
-        ct state established,related accept
-        iif lo accept
-        ip protocol icmp icmp type echo-request accept
-        tcp dport 22 accept
-        tcp dport {80, 443, 8080} accept
-        udp dport 443 accept
-        
-        log prefix "BLOCKED: " limit rate 5/minute
-        reject with icmp type port-unreachable
-    }
-    
-    chain forward {
-        type filter hook forward priority filter; policy drop;
-        ct state established,related accept
-    }
-    
-    chain output {
-        type filter hook output priority filter; policy accept;
-    }
-}
-NFT_EOF
-
-nft -f /etc/nftables.conf
-systemctl enable nftables
-systemctl restart nftables
-
 cat > /opt/vlesstgctl/uninstall.sh << 'UNINSTALL'
 #!/bin/bash
 cd /opt/vlesstgctl && docker-compose down
@@ -198,7 +162,6 @@ rm -rf /opt/vlesstgctl /etc/sing-box
 systemctl disable --now traffic-stats.timer
 rm -f /etc/systemd/system/traffic-stats.{service,timer}
 systemctl daemon-reload
-/usr/sbin/nft flush ruleset
 echo "✅ Удалено"
 UNINSTALL
 chmod +x /opt/vlesstgctl/uninstall.sh
