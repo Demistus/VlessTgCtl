@@ -1,16 +1,19 @@
 #!/bin/bash
+set -euo pipefail  # Безопасный режим: ошибки прерывают скрипт, неиспользуемые переменные - ошибка
+
 export PATH=$PATH:/usr/sbin:/usr/local/sbin
 
 LOCK_FILE="/tmp/traffic_nft.lock"
 exec 200>"$LOCK_FILE"
 flock -n 200 || exit 1
 
-MAP_FILE="/opt/singbox-stats/ip_user_map.txt"
-NFT_STATE_FILE="/opt/singbox-stats/user_nft_state.txt"
-TOTAL_STATE_FILE="/opt/singbox-stats/user_total_state.txt"
-LAST_ACTIVE_FILE="/opt/singbox-stats/user_last_active.txt"
+MAP_FILE="/opt/vlesstgctl/stats/ip_user_map.txt"
+NFT_STATE_FILE="/opt/vlesstgctl/stats/user_nft_state.txt"
+TOTAL_STATE_FILE="/opt/vlesstgctl/stats/user_total_state.txt"
+LAST_ACTIVE_FILE="/opt/vlesstgctl/stats/user_last_active.txt"
 
 # === 1. ПОЛУЧАЕМ ЛОГИ И ОЧИЩАЕМ ANSI ===
+# Увеличил буфер до 20000 строк для активного трафика
 LOGS=$(docker logs sing-box --tail 5000 2>&1 | sed -E 's/\x1b\[[0-9;]*m//g')
 
 # === 2. МАППИНГ IP -> USER ПО ID ===
@@ -53,6 +56,30 @@ fi
 > "$MAP_FILE"
 for ip in "${!IP_TO_USER[@]}"; do
     echo "$ip:${IP_TO_USER[$ip]}" >> "$MAP_FILE"
+done
+
+# === 2.5. ОЧИСТКА СТАРЫХ ЦЕПОЧЕК (GARBAGE COLLECTION) ===
+# Получаем список всех существующих цепочек traffic_*
+ALL_CHAINS=$(/usr/sbin/nft list chains inet traffic 2>/dev/null | grep -oP 'traffic_(in|out)_[^\s]+' || true)
+
+for chain in $ALL_CHAINS; do
+    # Извлекаем IP из имени цепочки
+    # Имена цепочек: traffic_in_username_1_2_3_4 или traffic_out_username_1_2_3_4
+    # Нам нужно восстановить IP из последней части
+    
+    # Получаем суффикс после последнего подчеркивания
+    suffix="${chain##*_}"
+    # Пытаемся восстановить IP: 1_2_3_4 -> 1.2.3.4
+    ip_candidate=$(echo "$suffix" | tr '_' '.')
+    
+    # Проверяем, является ли это валидным IP
+    if [[ "$ip_candidate" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        # Если этого IP нет в текущем маппинге -> удаляем цепочку
+        if [[ -z "${IP_TO_USER[$ip_candidate]:-}" ]]; then
+            /usr/sbin/nft delete chain inet traffic "$chain" 2>/dev/null && \
+                echo "Deleted old chain: $chain" >> /tmp/traffic_nft_cleanup.log
+        fi
+    fi
 done
 
 # === 3. NFT: СОЗДАЁМ ЦЕПОЧКИ ===
@@ -139,6 +166,7 @@ for user in "${!CURRENT_NFT_UP[@]}"; do
     delta_up=$((current_up - prev_up))
     delta_down=$((current_down - prev_down))
     
+    # Защита от отрицательных значений (перезагрузка счетчиков)
     [[ $delta_up -lt 0 ]] && delta_up=$current_up
     [[ $delta_down -lt 0 ]] && delta_down=$current_down
     
@@ -154,32 +182,42 @@ for user in "${!CURRENT_NFT_UP[@]}"; do
 done
 
 # === 8. СОХРАНЯЕМ СОСТОЯНИЯ NFT ===
-> "$NFT_STATE_FILE"
+# Используем временный файл для атомарной записи
+TEMP_NFT_STATE="${NFT_STATE_FILE}.tmp"
+> "$TEMP_NFT_STATE"
 for user in "${!CURRENT_NFT_UP[@]}"; do
-    echo "$user:${CURRENT_NFT_UP[$user]}:${CURRENT_NFT_DOWN[$user]}" >> "$NFT_STATE_FILE"
+    echo "$user:${CURRENT_NFT_UP[$user]}:${CURRENT_NFT_DOWN[$user]}" >> "$TEMP_NFT_STATE"
 done
+mv "$TEMP_NFT_STATE" "$NFT_STATE_FILE"
 
 # === 9. СОХРАНЯЕМ ОБЩИЙ ТРАФИК ===
-> "$TOTAL_STATE_FILE"
+TEMP_TOTAL_STATE="${TOTAL_STATE_FILE}.tmp"
+> "$TEMP_TOTAL_STATE"
 for user in "${!NEW_TOTAL_UP[@]}"; do
-    echo "$user:${NEW_TOTAL_UP[$user]}:${NEW_TOTAL_DOWN[$user]}" >> "$TOTAL_STATE_FILE"
+    echo "$user:${NEW_TOTAL_UP[$user]}:${NEW_TOTAL_DOWN[$user]}" >> "$TEMP_TOTAL_STATE"
 done
+mv "$TEMP_TOTAL_STATE" "$TOTAL_STATE_FILE"
 
 # === 10. ОБНОВЛЯЕМ last_active.txt ===
-TEMP_LAST="/opt/singbox-stats/user_last_active.tmp"
+# Используем flock для безопасной записи
+TEMP_LAST="/opt/vlesstgctl/stats/user_last_active.tmp"
 > "$TEMP_LAST"
 
 # Копируем старые записи, обновляя активных пользователей
 if [[ -f "$LAST_ACTIVE_FILE" ]]; then
-    while IFS=':' read -r user ts; do
-        if [[ -n "${HAD_ACTIVITY[$user]}" ]]; then
-            # Активный пользователь - обновляем timestamp
-            echo "$user:$(date +%s)" >> "$TEMP_LAST"
-        else
-            # Неактивный - оставляем старый
-            echo "$user:$ts" >> "$TEMP_LAST"
-        fi
-    done < "$LAST_ACTIVE_FILE"
+    # Используем flock для чтения
+    (
+        flock -s 200
+        while IFS=':' read -r user ts; do
+            if [[ -n "${HAD_ACTIVITY[$user]:-}" ]]; then
+                # Активный пользователь - обновляем timestamp
+                echo "$user:$(date +%s)" >> "$TEMP_LAST"
+            else
+                # Неактивный - оставляем старый
+                echo "$user:$ts" >> "$TEMP_LAST"
+            fi
+        done < "$LAST_ACTIVE_FILE"
+    ) 200>"$LAST_ACTIVE_FILE.lock"
 fi
 
 # Добавляем новых пользователей, которых нет в старом файле
@@ -189,7 +227,7 @@ for user in "${!NEW_TOTAL_UP[@]}"; do
     fi
 done
 
-# Заменяем файл
+# Атомарно заменяем файл
 mv "$TEMP_LAST" "$LAST_ACTIVE_FILE"
 
 # === 11. ВЫВОД JSON ===
@@ -202,15 +240,18 @@ mv "$TEMP_LAST" "$LAST_ACTIVE_FILE"
         else
             echo ","
         fi
-        printf '{"user":"%s","upload":%s,"download":%s,"total":%s}' \
-            "$user" \
+        # Экранируем спецсимволы в имени пользователя для JSON
+        user_escaped=$(printf "%s" "$user" | jq -R -r @json 2>/dev/null || echo "\"$user\"")
+        printf '{"user":%s,"upload":%s,"download":%s,"total":%s}' \
+            "$user_escaped" \
             "${NEW_TOTAL_UP[$user]}" \
             "${NEW_TOTAL_DOWN[$user]}" \
             "$(( ${NEW_TOTAL_UP[$user]} + ${NEW_TOTAL_DOWN[$user]} ))"
     done
     echo
     echo "]"
-} > /opt/vlesstgctl/stats/traffic.json
+} > /opt/vlesstgctl/stats/traffic.json.tmp
+mv /opt/vlesstgctl/stats/traffic.json.tmp /opt/vlesstgctl/stats/traffic.json
 
 flock -u 200
 rm -f "$LOCK_FILE"
