@@ -119,7 +119,7 @@ services:
       - NET_ADMIN
       - SYS_ADMIN
     volumes:
-      - /etc/sing-box/config.json:/etc/sing-box/config.json:ro
+      - /etc/sing-box/config.json:/etc/sing-box/config.json:rw
       - /opt/vlesstgctl/data:/opt/vlesstgctl/data
       - /opt/vlesstgctl/stats:/opt/vlesstgctl/stats
 
@@ -135,7 +135,7 @@ services:
       - BOT_TOKEN=${BOT_TOKEN}
       - ADMIN_IDS=${ADMIN_IDS}
     volumes:
-      - /etc/sing-box/config.json:/etc/sing-box/config.json:ro
+      - /etc/sing-box/config.json:/etc/sing-box/config.json:rw
       - /opt/vlesstgctl/data:/opt/vlesstgctl/data
       - /opt/vlesstgctl/stats:/opt/vlesstgctl/stats
 DOCKER_EOF
