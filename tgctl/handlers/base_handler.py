@@ -1,6 +1,5 @@
-from typing import Union, Optional
+from typing import Union
 from telegram import Update, CallbackQuery, Message
-from telegram.ext import ContextTypes
 from config import Config
 from utils.logger import logger
 
@@ -19,6 +18,16 @@ class BaseHandler:
         """Send main menu to user"""
         from handlers.user_handlers import UserHandlers
         await UserHandlers.send_menu(bot, chat_id, user_id)
+
+    @staticmethod
+    def build_fake_update(chat_id: int, user_id: int):
+        """Build a minimal update-like object for menu rendering flows."""
+        class FakeUpdate:
+            def __init__(self, chat_id, user_id):
+                self.effective_chat = type('obj', (object,), {'id': chat_id})()
+                self.effective_user = type('obj', (object,), {'id': user_id})()
+
+        return FakeUpdate(chat_id, user_id)
     
     @staticmethod
     def get_user_id(update: Update) -> int:

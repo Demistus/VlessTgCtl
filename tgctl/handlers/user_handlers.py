@@ -1,4 +1,3 @@
-import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from telegram.ext import ContextTypes
 from templates.messages import Messages, ButtonLabels, CallbackData
@@ -7,7 +6,6 @@ from services.user_service import UserService
 from services.config_service import ConfigGenerator
 from services.stats_service import TrafficStatsService
 from services.singbox_service import SingBoxService
-from utils.formatters import format_bytes
 from utils.logger import logger
 from config import Config
 
@@ -73,14 +71,12 @@ class UserHandlers(BaseHandler):
                     [InlineKeyboardButton(ButtonLabels.BACK, callback_data=CallbackData.BACK_TO_MENU)]
                 ])
             )
-            await query.answer()
         else:
             await update.message.reply_text(help_text, parse_mode='HTML')
     
     async def show_my_configs(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Show user's configurations"""
         query = update.callback_query
-        await query.answer()
         
         user_id = self.get_user_id(update)
         is_admin = await self.is_admin(update)
@@ -148,11 +144,18 @@ class UserHandlers(BaseHandler):
             Messages.SELECT_PLATFORM,
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
+
+    async def _can_access_config(self, user_id: int, username: str) -> bool:
+        """Check whether the caller may access the requested config."""
+        if Config.is_admin(user_id):
+            return True
+
+        user = await self.user_service.get_user_by_telegram_id(user_id)
+        return bool(user and user.name.lower() == username.lower())
     
     async def send_config_by_platform(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Send configuration for specific platform"""
         query = update.callback_query
-        await query.answer()
         
         # Parse platform and username
         if query.data.startswith(CallbackData.CONFIG_ANDROID_PREFIX):
@@ -161,11 +164,17 @@ class UserHandlers(BaseHandler):
         else:
             platform = "ios"
             username = query.data.replace(CallbackData.CONFIG_IOS_PREFIX, "")
+
+        user_id = query.from_user.id
+        if not await self._can_access_config(user_id, username):
+            logger.warning(f"Unauthorized config access attempt by {user_id} for {username}")
+            await self.safe_edit_message(query, Messages.ACCESS_DENIED)
+            return
         
         logger.info(f"Sending config for username: {username}, platform: {platform}")
         
         # Get user from sing-box config
-        singbox = SingBoxService()
+        singbox = self.user_service.singbox
         users = await singbox.load_users()
         
         user = None
@@ -243,7 +252,6 @@ class UserHandlers(BaseHandler):
     async def create_my_config(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Create new configuration for user"""
         query = update.callback_query
-        await query.answer()
         
         user_id = self.get_user_id(update)
         username = update.effective_user.username or f"user_{user_id}"
@@ -259,7 +267,7 @@ class UserHandlers(BaseHandler):
     
         if existing_username:
            # Проверяем, существует ли этот пользователь в конфиге sing-box
-            singbox = SingBoxService()
+            singbox = self.user_service.singbox
             users = await singbox.load_users()
             existing_user = next((u for u in users if u.name.lower() == existing_username.lower()), None)
             
@@ -300,7 +308,7 @@ class UserHandlers(BaseHandler):
     
         await status_msg.delete()
     
-        singbox = SingBoxService()
+        singbox = self.user_service.singbox
         server_config = await singbox.get_server_config()
         self.config_generator.server = server_config
     
@@ -310,7 +318,6 @@ class UserHandlers(BaseHandler):
     async def show_my_traffic(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Show user's traffic statistics"""
         query = update.callback_query
-        await query.answer()
         
         user_id = self.get_user_id(update)
         user = await self.user_service.get_user_by_telegram_id(user_id)
@@ -350,9 +357,8 @@ class UserHandlers(BaseHandler):
     async def show_server_info(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Show server information"""
         query = update.callback_query
-        await query.answer()
         
-        singbox = SingBoxService()
+        singbox = self.user_service.singbox
         server_config = await singbox.get_server_config()
         users = await singbox.load_users()
         

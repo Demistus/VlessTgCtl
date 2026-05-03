@@ -3,6 +3,7 @@ from telegram.ext import ContextTypes
 from templates.messages import Messages, ButtonLabels, CallbackData
 from handlers.base_handler import BaseHandler
 from services.user_service import UserService
+from services.config_service import ConfigGenerator
 from services.stats_service import TrafficStatsService
 from services.singbox_service import SingBoxService
 from utils.formatters import format_bytes
@@ -14,9 +15,33 @@ from config import Config
 class AdminHandlers(BaseHandler):
     """Handlers for admin commands"""
     
-    def __init__(self, user_service: UserService, stats_service: TrafficStatsService):
+    def __init__(
+        self,
+        user_service: UserService,
+        stats_service: TrafficStatsService,
+        config_generator: ConfigGenerator,
+        user_handler
+    ):
         self.user_service = user_service
         self.stats_service = stats_service
+        self.config_generator = config_generator
+        self.user_handler = user_handler
+
+    async def _ensure_admin_callback(self, update: Update) -> bool:
+        """Validate admin access for callback-based admin actions."""
+        query = update.callback_query
+        if not query:
+            return False
+        if Config.is_admin(query.from_user.id):
+            return True
+
+        await query.answer(Messages.ACCESS_DENIED, show_alert=True)
+        return False
+
+    async def _return_to_menu(self, chat_id: int, user_id: int, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Send the main menu back to the current user."""
+        fake_update = self.build_fake_update(chat_id, user_id)
+        await self.user_handler.menu(fake_update, context)
     
     async def show_user_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Show traffic statistics for all users (admin only)"""
@@ -134,8 +159,7 @@ class AdminHandlers(BaseHandler):
             from handlers.conversation_handlers import ConversationStates
             return ConversationStates.NAME
         
-        singbox = SingBoxService()
-        users = await singbox.load_users()
+        users = await self.user_service.singbox.load_users()
         
         if any(u.name.lower() == username.lower() for u in users):
             await update.message.reply_text(f"❌ Пользователь {username} уже существует!")
@@ -198,7 +222,7 @@ class AdminHandlers(BaseHandler):
         )
         
         # Add user
-        singbox = SingBoxService()
+        singbox = self.user_service.singbox
         from models import User
         user = User(name=username, uuid=user_info['uuid'])
         
@@ -221,51 +245,23 @@ class AdminHandlers(BaseHandler):
         )
         
         # Send config directly without FakeQuery
-        from services.config_service import ConfigGenerator
-        from handlers.user_handlers import UserHandlers
-        
         server_config = await singbox.get_server_config()
-        config_generator = ConfigGenerator(server_config)
+        self.config_generator.server = server_config
         
         # Get the user object
         user_obj = await self.user_service.get_user_by_username(username)
         if user_obj:
             # Send config using direct bot messages
-            await self._send_config_directly(bot, chat_id, user_obj.name, user_obj.uuid, config_generator, context)
+            await self._send_config_directly(bot, chat_id, user_obj.name, user_obj.uuid)
         
         context.user_data.clear()
         return -1
     
-    async def _send_config_directly(self, bot, chat_id: int, username: str, user_uuid: str, config_generator, context):
+    async def _send_config_directly(self, bot, chat_id: int, username: str, user_uuid: str):
         """Send config directly without FakeQuery"""
-        from handlers.user_handlers import UserHandlers
-        from services.singbox_service import SingBoxService
-        
-        singbox = SingBoxService()
+        singbox = self.user_service.singbox
         server_config = await singbox.get_server_config()
-        config_generator.server = server_config
-        
-        # Create a simple message object
-        class SimpleMessage:
-            def __init__(self, bot, chat_id):
-                self.bot = bot
-                self.chat_id = chat_id
-            
-            async def edit_text(self, text, parse_mode=None, reply_markup=None):
-                # Just send new message instead of edit
-                pass
-        
-        class SimpleQuery:
-            def __init__(self, bot, chat_id):
-                self.message = SimpleMessage(bot, chat_id)
-                self.bot = bot
-                self.chat_id = chat_id
-            
-            async def answer(self):
-                pass
-        
-        fake_query = SimpleQuery(bot, chat_id)
-        user_handler = UserHandlers(self.user_service, config_generator, self.stats_service)
+        self.config_generator.server = server_config
         
         # Send platform selection
         keyboard = [
@@ -289,8 +285,7 @@ class AdminHandlers(BaseHandler):
             await update.callback_query.answer(Messages.ACCESS_DENIED, show_alert=True)
             return
         
-        singbox = SingBoxService()
-        users = await singbox.load_users()
+        users = await self.user_service.singbox.load_users()
         
         if not users:
             await update.callback_query.message.edit_text("❌ Нет пользователей для удаления")
@@ -312,6 +307,9 @@ class AdminHandlers(BaseHandler):
     async def confirm_delete_user(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Confirm user deletion"""
         query = update.callback_query
+        if not await self._ensure_admin_callback(update):
+            return
+
         await query.answer()
         
         username = query.data.replace(CallbackData.DELETE_PREFIX, "")
@@ -333,6 +331,9 @@ class AdminHandlers(BaseHandler):
     async def perform_delete_user(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Perform user deletion"""
         query = update.callback_query
+        if not await self._ensure_admin_callback(update):
+            return
+
         await query.answer()
         
         username = context.user_data.get('delete_username')
@@ -360,44 +361,15 @@ class AdminHandlers(BaseHandler):
         )
         
         context.user_data.clear()
-        
-        # Return to menu
-        from handlers.user_handlers import UserHandlers
-        from services.config_service import ConfigGenerator
-        
-        singbox = SingBoxService()
-        server_config = await singbox.get_server_config()
-        config_generator = ConfigGenerator(server_config)
-        user_handler = UserHandlers(self.user_service, config_generator, self.stats_service)
-        
-        # Create a fake update for menu
-        class FakeUpdate:
-            def __init__(self, chat_id, user_id):
-                self.effective_chat = type('obj', (object,), {'id': chat_id})()
-                self.effective_user = type('obj', (object,), {'id': user_id})()
-        
-        fake_update = FakeUpdate(query.message.chat_id, query.from_user.id)
-        await user_handler.menu(fake_update, context)
+        await self._return_to_menu(query.message.chat_id, query.from_user.id, context)
     
     async def cancel_delete(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Cancel user deletion"""
         query = update.callback_query
+        if not await self._ensure_admin_callback(update):
+            return
+
         await query.answer()
+
         context.user_data.clear()
-        
-        # Return to menu
-        from handlers.user_handlers import UserHandlers
-        from services.config_service import ConfigGenerator
-        
-        singbox = SingBoxService()
-        server_config = await singbox.get_server_config()
-        config_generator = ConfigGenerator(server_config)
-        user_handler = UserHandlers(self.user_service, config_generator, self.stats_service)
-        
-        class FakeUpdate:
-            def __init__(self, chat_id, user_id):
-                self.effective_chat = type('obj', (object,), {'id': chat_id})()
-                self.effective_user = type('obj', (object,), {'id': user_id})()
-        
-        fake_update = FakeUpdate(query.message.chat_id, query.from_user.id)
-        await user_handler.menu(fake_update, context)
+        await self._return_to_menu(query.message.chat_id, query.from_user.id, context)

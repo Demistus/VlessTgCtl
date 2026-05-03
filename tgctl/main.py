@@ -52,8 +52,8 @@ async def main_async():
     
     # Initialize handlers
     user_handlers = UserHandlers(user_service, config_generator, stats_service)
-    admin_handlers = AdminHandlers(user_service, stats_service)
-    conv_handlers = ConversationHandlers()
+    admin_handlers = AdminHandlers(user_service, stats_service, config_generator, user_handlers)
+    conv_handlers = ConversationHandlers(user_handlers)
     
     # Create application
     request = HTTPXRequest(
@@ -103,10 +103,7 @@ async def main_async():
     application.add_handler(CallbackQueryHandler(admin_handlers.cancel_delete, pattern='^cancel_delete$'))
     
     # User callback handler - обрабатывает все остальные callback
-    application.add_handler(CallbackQueryHandler(
-        user_handlers.handle_callback, 
-        pattern='^(?!.*(add_user|delete_user|del_|confirm_delete|cancel_delete|user_stats|user_status)).*'
-    ))
+    application.add_handler(CallbackQueryHandler(user_handlers.handle_callback))
     
     # Message handler - для обычных текстовых сообщений
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, user_handlers.handle_message))

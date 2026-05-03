@@ -1,8 +1,6 @@
 import json
 import asyncio
-import subprocess
-from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 from config import Config
 from models import User, ServerConfig
 from utils.logger import logger
@@ -70,20 +68,74 @@ class SingBoxService:
         except Exception as e:
             logger.error(f"Failed to save users: {e}")
             return False
+
+    def _load_config_unlocked(self) -> Dict[str, Any]:
+        """Load config while the caller is already holding the file lock."""
+        if not self.config_path.exists():
+            return {}
+
+        with open(self.config_path, 'r') as f:
+            content = f.read().strip()
+            return json.loads(content) if content else {}
+
+    def _extract_users_from_config(self, config: Dict[str, Any]) -> List[User]:
+        """Build user models from loaded sing-box config."""
+        users = []
+        for inbound in config.get('inbounds', []):
+            if inbound.get('type') == 'vless':
+                for user_data in inbound.get('users', []):
+                    users.append(
+                        User(
+                            name=user_data.get('name'),
+                            uuid=user_data.get('uuid')
+                        )
+                    )
+        return users
+
+    def _write_users_to_config(self, config: Dict[str, Any], users: List[User]) -> bool:
+        """Replace vless users in config and persist atomically."""
+        updated = False
+        for inbound in config.get('inbounds', []):
+            if inbound.get('type') == 'vless':
+                inbound['users'] = [
+                    {
+                        'name': user.name,
+                        'uuid': user.uuid,
+                        'flow': 'xtls-rprx-vision'
+                    }
+                    for user in users
+                ]
+                updated = True
+                break
+
+        if not updated:
+            logger.error("VLESS inbound not found in config")
+            return False
+
+        temp_path = self.config_path.with_suffix('.tmp')
+        with open(temp_path, 'w') as f:
+            json.dump(config, f, indent=2)
+        temp_path.replace(self.config_path)
+        return True
     
     async def add_user(self, user: User) -> tuple[bool, str]:
         """Add user to configuration"""
         try:
-            users = await self.load_users()
-            
-            # Check if user already exists
-            if any(u.name.lower() == user.name.lower() for u in users):
-                return False, "Пользователь с таким именем уже существует"
-            
-            users.append(user)
-            
-            if not await self.save_users(users):
+            if not self.config_path.exists():
+                logger.error("Config file does not exist")
                 return False, "Не удалось сохранить конфигурацию"
+
+            with self.lock:
+                config = self._load_config_unlocked()
+                users = self._extract_users_from_config(config)
+
+                if any(u.name.lower() == user.name.lower() for u in users):
+                    return False, "Пользователь с таким именем уже существует"
+
+                users.append(user)
+
+                if not self._write_users_to_config(config, users):
+                    return False, "Не удалось сохранить конфигурацию"
             
             await self.restart()
             logger.info(f"User added: {user.name}")
@@ -95,20 +147,26 @@ class SingBoxService:
     async def remove_user(self, username: str) -> tuple[bool, str]:
         """Remove user from configuration"""
         try:
-            users = await self.load_users()
-            
-            user_to_remove = next(
-                (u for u in users if u.name.lower() == username.lower()),
-                None
-            )
-            
-            if not user_to_remove:
-                return False, "Пользователь не найден"
-            
-            users = [u for u in users if u.name.lower() != username.lower()]
-            
-            if not await self.save_users(users):
+            if not self.config_path.exists():
+                logger.error("Config file does not exist")
                 return False, "Не удалось сохранить конфигурацию"
+
+            with self.lock:
+                config = self._load_config_unlocked()
+                users = self._extract_users_from_config(config)
+
+                user_to_remove = next(
+                    (u for u in users if u.name.lower() == username.lower()),
+                    None
+                )
+
+                if not user_to_remove:
+                    return False, "Пользователь не найден"
+
+                users = [u for u in users if u.name.lower() != username.lower()]
+
+                if not self._write_users_to_config(config, users):
+                    return False, "Не удалось сохранить конфигурацию"
             
             await self.restart()
             logger.info(f"User removed: {username}")
