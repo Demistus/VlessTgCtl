@@ -29,6 +29,30 @@ if ! command -v docker-compose &> /dev/null; then
     chmod +x /usr/local/bin/docker-compose
 fi
 
+echo -e "${YELLOW}[3.5/10] Установка wgcf...${NC}"
+case "$(uname -m)" in
+    x86_64|amd64) WGCF_ARCH="amd64" ;;
+    aarch64|arm64) WGCF_ARCH="arm64" ;;
+    armv7l) WGCF_ARCH="armv7" ;;
+    armv6l) WGCF_ARCH="armv6" ;;
+    armv5l) WGCF_ARCH="armv5" ;;
+    i386|i686) WGCF_ARCH="386" ;;
+    *)
+        echo -e "${RED}❌ Неподдерживаемая архитектура для wgcf: $(uname -m)${NC}"
+        exit 1
+        ;;
+esac
+
+WGCF_VERSION=$(curl -fsSL https://api.github.com/repos/ViRb3/wgcf/releases/latest | jq -r '.tag_name | ltrimstr("v")')
+if [ -z "$WGCF_VERSION" ] || [ "$WGCF_VERSION" = "null" ]; then
+    echo -e "${RED}❌ Не удалось определить последнюю версию wgcf${NC}"
+    exit 1
+fi
+
+WGCF_URL="https://github.com/ViRb3/wgcf/releases/download/v${WGCF_VERSION}/wgcf_${WGCF_VERSION}_linux_${WGCF_ARCH}"
+curl -fL "$WGCF_URL" -o /usr/local/bin/wgcf
+chmod +x /usr/local/bin/wgcf
+
 echo -e "${YELLOW}[4/10] Клонирование репозитория...${NC}"
 cd /opt
 rm -rf vlesstgctl
@@ -85,16 +109,81 @@ if [ -f vless/config.json ]; then
         exit 1
     fi
 
+    echo "Регистрируем Cloudflare WARP и генерируем WireGuard профиль..."
+    WARP_WORKDIR=$(mktemp -d)
+    trap 'rm -rf "$WARP_WORKDIR"' EXIT
+    (
+        cd "$WARP_WORKDIR"
+        wgcf register --accept-tos
+        wgcf generate
+    )
+
+    WARP_PROFILE="$WARP_WORKDIR/wgcf-profile.conf"
+    if [ ! -f "$WARP_PROFILE" ]; then
+        echo -e "${RED}❌ wgcf не создал wgcf-profile.conf${NC}"
+        exit 1
+    fi
+
+    WARP_PRIVATE_KEY=$(awk -F'= *' '
+        /^\[Interface\]/ { section = "interface"; next }
+        /^\[Peer\]/ { section = "peer"; next }
+        section == "interface" && $1 ~ /^[[:space:]]*PrivateKey[[:space:]]*$/ {
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit
+        }
+    ' "$WARP_PROFILE")
+    WARP_ADDRESSES=$(awk -F'= *' '
+        /^\[Interface\]/ { section = "interface"; next }
+        /^\[Peer\]/ { section = "peer"; next }
+        section == "interface" && $1 ~ /^[[:space:]]*Address[[:space:]]*$/ {
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit
+        }
+    ' "$WARP_PROFILE")
+    WARP_PEER_PUBLIC_KEY=$(awk -F'= *' '
+        /^\[Interface\]/ { section = "interface"; next }
+        /^\[Peer\]/ { section = "peer"; next }
+        section == "peer" && $1 ~ /^[[:space:]]*PublicKey[[:space:]]*$/ {
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit
+        }
+    ' "$WARP_PROFILE")
+    WARP_ENDPOINT=$(awk -F'= *' '
+        /^\[Interface\]/ { section = "interface"; next }
+        /^\[Peer\]/ { section = "peer"; next }
+        section == "peer" && $1 ~ /^[[:space:]]*Endpoint[[:space:]]*$/ {
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit
+        }
+    ' "$WARP_PROFILE")
+    WARP_ENDPOINT_HOST="${WARP_ENDPOINT%:*}"
+    WARP_ENDPOINT_PORT="${WARP_ENDPOINT##*:}"
+    WARP_ADDRESSES_JSON=$(printf "%s" "$WARP_ADDRESSES" | jq -R 'split(",") | map(gsub("^[[:space:]]+|[[:space:]]+$"; ""))')
+
+    if [ -z "$WARP_PRIVATE_KEY" ] || [ -z "$WARP_ADDRESSES" ] || [ -z "$WARP_PEER_PUBLIC_KEY" ] || [ -z "$WARP_ENDPOINT_HOST" ] || [ -z "$WARP_ENDPOINT_PORT" ]; then
+        echo -e "${RED}❌ Не удалось разобрать WARP профиль wgcf${NC}"
+        cat "$WARP_PROFILE"
+        exit 1
+    fi
+
     jq \
         --arg sni "$VLESS_SNI" \
         --arg private_key "$REALITY_PRIVATE_KEY" \
         --arg short_id "$REALITY_SHORT_ID" \
+        --arg warp_private_key "$WARP_PRIVATE_KEY" \
+        --argjson warp_addresses "$WARP_ADDRESSES_JSON" \
+        --arg warp_peer_public_key "$WARP_PEER_PUBLIC_KEY" \
+        --arg warp_endpoint_host "$WARP_ENDPOINT_HOST" \
+        --argjson warp_endpoint_port "$WARP_ENDPOINT_PORT" \
         '(.inbounds[] | select(.type == "vless").listen_port) = 443 |
          (.inbounds[] | select(.type == "vless").tls.server_name) = $sni |
          (.inbounds[] | select(.type == "vless").tls.reality.handshake.server) = $sni |
          (.inbounds[] | select(.type == "vless").tls.reality.private_key) = $private_key |
-         (.inbounds[] | select(.type == "vless").tls.reality.short_id) = $short_id' \
+         (.inbounds[] | select(.type == "vless").tls.reality.short_id) = $short_id |
+         (.endpoints[] | select(.type == "wireguard" and .tag == "warp-out").private_key) = $warp_private_key |
+         (.endpoints[] | select(.type == "wireguard" and .tag == "warp-out").address) = $warp_addresses |
+         (.endpoints[] | select(.type == "wireguard" and .tag == "warp-out").peers[0].public_key) = $warp_peer_public_key |
+         (.endpoints[] | select(.type == "wireguard" and .tag == "warp-out").peers[0].address) = $warp_endpoint_host |
+         (.endpoints[] | select(.type == "wireguard" and .tag == "warp-out").peers[0].port) = $warp_endpoint_port' \
         vless/config.json > /etc/sing-box/config.json
+    rm -rf "$WARP_WORKDIR"
+    trap - EXIT
 
     cat >> .env << ENV_EOF
 REALITY_PUBLIC_KEY=$REALITY_PUBLIC_KEY

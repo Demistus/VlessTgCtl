@@ -59,8 +59,8 @@
 						"server": "www.microsoft.com",
 						"server_port": 443
 					},
-					"private_key": "kGcrD11-RDQQRxch3iaBwwbsmuf6VEMmgFfFZFH5SWI",
-					"short_id": "a1b29b1900be370a"
+					"private_key": "REPLACE_WITH_INSTALLER_GENERATED_REALITY_PRIVATE_KEY",
+					"short_id": "REPLACE_WITH_INSTALLER_GENERATED_REALITY_SHORT_ID"
 				}
 			}
 		}
@@ -78,15 +78,15 @@
 			"system": true,
 			"mtu": 1280,
 			"address": [
-				"10.0.0.1/32",
-				"2606:4700:110:8a36:df92:102a:9602:fa18/128"
+				"REPLACE_WITH_WGCF_IPV4_ADDRESS",
+				"REPLACE_WITH_WGCF_IPV6_ADDRESS"
 			],
-			"private_key": "WD8pztAsEUi4J4IIO2UBQVAgjnuUE1QlHVtqq4BPW04=",
+			"private_key": "REPLACE_WITH_WGCF_PRIVATE_KEY",
 			"peers": [
 				{
 					"address": "engage.cloudflareclient.com",
 					"port": 2408,
-					"public_key": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
+					"public_key": "REPLACE_WITH_WGCF_PEER_PUBLIC_KEY",
 					"allowed_ips": [
 						"0.0.0.0/0",
 						"::/0"
@@ -293,4 +293,3 @@
 		"final": "direct"
 	}
 }
-
