@@ -288,6 +288,20 @@ class UserHandlers(BaseHandler):
                 # Маппинг есть, но пользователя в конфиге нет - удаляем маппинг
                 logger.warning(f"Mapping exists but user not found in config, deleting mapping")
                 await self.user_service.mapping.delete_mapping(user_id)
+
+        restored_user = await self.user_service.restore_mapping_by_username(user_id, username)
+        if restored_user:
+            logger.info(f"Restored existing config for user_id={user_id} with username={restored_user.name}")
+            status_msg = await query.message.reply_text(
+                "📱 <b>Нашел ваш существующий конфиг и восстановил привязку. Отправляю...</b>",
+                parse_mode='HTML'
+            )
+            await status_msg.delete()
+
+            server_config = await self.user_service.singbox.get_server_config()
+            self.config_generator.server = server_config
+            await self.send_client_config(query, context, restored_user.name, restored_user.uuid)
+            return
     
         # Если дошли сюда - создаем нового пользователя
         logger.info(f"No existing config found, creating new user")
