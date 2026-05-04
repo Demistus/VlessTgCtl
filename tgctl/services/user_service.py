@@ -133,6 +133,24 @@ class UserService:
             return []
         
         return [u for u in users if u.name.lower() == username.lower()]
+
+    async def restore_mapping_by_username(self, telegram_id: int, username: str) -> Optional[User]:
+        """Restore a lost Telegram mapping if the config already exists for this username."""
+        user = await self.get_user_by_username(username)
+        if not user:
+            return None
+
+        existing_telegram_id = await self.mapping.find_telegram_id_by_username(user.name)
+        if existing_telegram_id and existing_telegram_id != telegram_id:
+            logger.warning(
+                f"Cannot restore mapping for {telegram_id}: username {user.name} is already mapped to {existing_telegram_id}"
+            )
+            return None
+
+        await self.mapping.save_mapping(telegram_id, user.name)
+        user.telegram_id = telegram_id
+        logger.info(f"Restored mapping: {telegram_id} -> {user.name}")
+        return user
     
     async def create_user(self, telegram_id: int, username: str) -> Tuple[bool, str, Optional[User]]:
         """Create new user"""
@@ -191,4 +209,3 @@ class UserService:
         
         logger.info(f"Deleted user {username}")
         return True, "Success"
-
