@@ -149,7 +149,7 @@ services:
     env_file:
       - .env
     volumes:
-      - ./data:/app/data
+      - ./data:/opt/vlesstgctl/data
       - /opt/vlesstgctl/stats:/opt/vlesstgctl/stats
       - /etc/sing-box:/etc/sing-box:rw
       - /usr/bin/docker:/usr/bin/docker
