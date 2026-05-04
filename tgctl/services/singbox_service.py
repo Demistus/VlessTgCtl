@@ -1,5 +1,6 @@
 import json
 import asyncio
+import copy
 from typing import Dict, Any, List
 from config import Config
 from models import User, ServerConfig
@@ -92,6 +93,13 @@ class SingBoxService:
                     )
         return users
 
+    def _write_config_unlocked(self, config: Dict[str, Any]) -> None:
+        """Persist config while the caller is already holding the file lock."""
+        temp_path = self.config_path.with_suffix('.tmp')
+        with open(temp_path, 'w') as f:
+            json.dump(config, f, indent=2)
+        temp_path.replace(self.config_path)
+
     def _write_users_to_config(self, config: Dict[str, Any], users: List[User]) -> bool:
         """Replace vless users in config and persist atomically."""
         updated = False
@@ -112,10 +120,7 @@ class SingBoxService:
             logger.error("VLESS inbound not found in config")
             return False
 
-        temp_path = self.config_path.with_suffix('.tmp')
-        with open(temp_path, 'w') as f:
-            json.dump(config, f, indent=2)
-        temp_path.replace(self.config_path)
+        self._write_config_unlocked(config)
         return True
     
     async def add_user(self, user: User) -> tuple[bool, str]:
@@ -127,6 +132,7 @@ class SingBoxService:
 
             with self.lock:
                 config = self._load_config_unlocked()
+                original_config = copy.deepcopy(config)
                 users = self._extract_users_from_config(config)
 
                 if any(u.name.lower() == user.name.lower() for u in users):
@@ -137,7 +143,11 @@ class SingBoxService:
                 if not self._write_users_to_config(config, users):
                     return False, "Не удалось сохранить конфигурацию"
             
-            await self.restart()
+            if not await self.restart():
+                with self.lock:
+                    self._write_config_unlocked(original_config)
+                return False, "Конфигурация сохранена, но sing-box не применил изменения. Изменения отменены."
+
             logger.info(f"User added: {user.name}")
             return True, "Success"
         except Exception as e:
@@ -153,6 +163,7 @@ class SingBoxService:
 
             with self.lock:
                 config = self._load_config_unlocked()
+                original_config = copy.deepcopy(config)
                 users = self._extract_users_from_config(config)
 
                 user_to_remove = next(
@@ -168,7 +179,11 @@ class SingBoxService:
                 if not self._write_users_to_config(config, users):
                     return False, "Не удалось сохранить конфигурацию"
             
-            await self.restart()
+            if not await self.restart():
+                with self.lock:
+                    self._write_config_unlocked(original_config)
+                return False, "Конфигурация сохранена, но sing-box не применил изменения. Изменения отменены."
+
             logger.info(f"User removed: {username}")
             return True, "Success"
         except Exception as e:
@@ -213,6 +228,7 @@ class SingBoxService:
             with self.lock.read_json() as data:
                 for inbound in data.get('inbounds', []):
                     if inbound.get('type') == 'vless':
+                        config.port = str(inbound.get('listen_port', config.port))
                         tls = inbound.get('tls', {})
                         reality = tls.get('reality', {})
                         

@@ -80,8 +80,10 @@ if /usr/sbin/nft list tables inet 2>/dev/null | grep -q "^table inet traffic$"; 
     done
 fi
 
-# === 3. NFT: СОЗДАЁМ ЦЕПОЧКИ ===
-/usr/sbin/nft add table inet traffic 2>/dev/null
+# === 3. NFT: СОЗДАЁМ ТАБЛИЦУ И ЦЕПОЧКИ ===
+if ! /usr/sbin/nft list table inet traffic >/dev/null 2>&1; then
+    /usr/sbin/nft add table inet traffic
+fi
 
 for ip in "${!IP_TO_USER[@]}"; do
     user="${IP_TO_USER[$ip]}"

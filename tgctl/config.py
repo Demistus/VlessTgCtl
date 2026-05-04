@@ -41,10 +41,10 @@ class Config:
     USERNAME_PATTERN: str = r'^[a-z][a-z0-9_]{2,19}$'
     
     # Server defaults
-    DEFAULT_DOMAIN: str = "jacket.casacam.net"
-    DEFAULT_PORT: str = "443"
-    DEFAULT_PUBLIC_KEY: str = "sGUInZ4epsI4uzQ9CKHWAzwIhG9Cy5P9KTAuzTVmfzg"
-    DEFAULT_VLESS_SNI: str = "www.microsoft.com"
+    DEFAULT_DOMAIN: str = os.getenv("SERVER_DOMAIN", "")
+    DEFAULT_PORT: str = os.getenv("VLESS_PORT", "443")
+    DEFAULT_PUBLIC_KEY: str = os.getenv("REALITY_PUBLIC_KEY", "")
+    DEFAULT_VLESS_SNI: str = os.getenv("VLESS_SNI", "www.microsoft.com")
     
     @classmethod
     def get_admin_ids(cls) -> List[int]:
@@ -60,6 +60,10 @@ class Config:
         if not cls.BOT_TOKEN:
             logger.error("BOT_TOKEN environment variable is not set!")
             sys.exit(1)
+        if not cls.DEFAULT_DOMAIN:
+            logger.warning("SERVER_DOMAIN environment variable is not set; generated client configs may be invalid.")
+        if not cls.DEFAULT_PUBLIC_KEY:
+            logger.warning("REALITY_PUBLIC_KEY environment variable is not set; generated client configs may be invalid.")
         
         # Create required directories
         cls.DATA_DIR.mkdir(parents=True, exist_ok=True)

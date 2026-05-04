@@ -14,7 +14,7 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 echo -e "${YELLOW}[1/10] Установка зависимостей...${NC}"
-apt-get update && apt-get install -y jq nftables git curl wget
+apt-get update && apt-get install -y jq nftables git curl wget openssl
 
 echo -e "${YELLOW}[2/10] Установка Docker...${NC}"
 if ! command -v docker &> /dev/null; then
@@ -45,10 +45,24 @@ echo "Введите BOT_TOKEN:"
 read -r BOT_TOKEN </dev/tty
 echo "Введите ADMIN_IDS (Telegram ID, можно через запятую):"
 read -r ADMIN_IDS </dev/tty
+echo "Введите домен сервера (например vpn.example.com):"
+read -r SERVER_DOMAIN </dev/tty
+echo "Введите SNI для REALITY [www.microsoft.com]:"
+read -r VLESS_SNI </dev/tty
+VLESS_SNI=${VLESS_SNI:-www.microsoft.com}
+VLESS_PORT=443
+
+if [ -z "$SERVER_DOMAIN" ]; then
+    echo -e "${RED}❌ SERVER_DOMAIN не может быть пустым${NC}"
+    exit 1
+fi
 
 cat > .env << ENV_EOF
 BOT_TOKEN=$BOT_TOKEN
 ADMIN_IDS=$ADMIN_IDS
+SERVER_DOMAIN=$SERVER_DOMAIN
+VLESS_PORT=$VLESS_PORT
+VLESS_SNI=$VLESS_SNI
 ENV_EOF
 
 echo -e "${YELLOW}[6/10] Создание директорий...${NC}"
@@ -58,7 +72,34 @@ mkdir -p /etc/sing-box
 
 echo -e "${YELLOW}[7/10] Установка конфига sing-box...${NC}"
 if [ -f vless/config.json ]; then
-    cp vless/config.json /etc/sing-box/config.json
+    echo "Генерируем ключи REALITY..."
+    docker build -t vlesstgctl-sing-box:latest -f vless/Dockerfile.vless vless
+    KEYPAIR=$(docker run --rm --entrypoint sing-box vlesstgctl-sing-box:latest generate reality-keypair)
+    REALITY_PRIVATE_KEY=$(printf "%s\n" "$KEYPAIR" | awk -F': *' 'tolower($1) ~ /private/ {print $2; exit}')
+    REALITY_PUBLIC_KEY=$(printf "%s\n" "$KEYPAIR" | awk -F': *' 'tolower($1) ~ /public/ {print $2; exit}')
+    REALITY_SHORT_ID=$(openssl rand -hex 8)
+
+    if [ -z "$REALITY_PRIVATE_KEY" ] || [ -z "$REALITY_PUBLIC_KEY" ]; then
+        echo -e "${RED}❌ Не удалось сгенерировать REALITY keypair${NC}"
+        echo "$KEYPAIR"
+        exit 1
+    fi
+
+    jq \
+        --arg sni "$VLESS_SNI" \
+        --arg private_key "$REALITY_PRIVATE_KEY" \
+        --arg short_id "$REALITY_SHORT_ID" \
+        '(.inbounds[] | select(.type == "vless").listen_port) = 443 |
+         (.inbounds[] | select(.type == "vless").tls.server_name) = $sni |
+         (.inbounds[] | select(.type == "vless").tls.reality.handshake.server) = $sni |
+         (.inbounds[] | select(.type == "vless").tls.reality.private_key) = $private_key |
+         (.inbounds[] | select(.type == "vless").tls.reality.short_id) = $short_id' \
+        vless/config.json > /etc/sing-box/config.json
+
+    cat >> .env << ENV_EOF
+REALITY_PUBLIC_KEY=$REALITY_PUBLIC_KEY
+REALITY_SHORT_ID=$REALITY_SHORT_ID
+ENV_EOF
 else
     echo -e "${RED}❌ vless/config.json не найден${NC}"
     exit 1
