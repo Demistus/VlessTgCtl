@@ -45,8 +45,8 @@
 		{
 			"tag": "REALITY",
 			"type": "vless",
-			"listen": "::",
-			"listen_port": 443,
+			"listen": "0.0.0.0",
+			"listen_port": 6443,
 			"tcp_multi_path": true,
 			"tcp_fast_open": true,
 			"users": [],
