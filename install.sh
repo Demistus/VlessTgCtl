@@ -152,23 +152,24 @@ if [ -f vless/config.json ]; then
             gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit
         }
     ' "$WARP_PROFILE")
+	
     WARP_ENDPOINT_HOST="${WARP_ENDPOINT%:*}"
     WARP_ENDPOINT_PORT="${WARP_ENDPOINT##*:}"
+    
+    # Преобразуем адреса в JSON массив
     WARP_ADDRESSES_JSON=$(printf "%s" "$WARP_ADDRESSES" | jq -R 'split(",") | map(gsub("^[[:space:]]+|[[:space:]]+$"; ""))')
-
-    if [ -z "$WARP_PRIVATE_KEY" ] || [ -z "$WARP_ADDRESSES" ] || [ -z "$WARP_PEER_PUBLIC_KEY" ] || [ -z "$WARP_ENDPOINT_HOST" ] || [ -z "$WARP_ENDPOINT_PORT" ]; then
-        echo -e "${RED}❌ Не удалось разобрать WARP профиль wgcf${NC}"
-        cat "$WARP_PROFILE"
-        exit 1
-    fi
+    
+    # Экранируем ключи для jq
+    WARP_PRIVATE_KEY_JSON=$(printf '%s' "$WARP_PRIVATE_KEY" | jq -Rs .)
+    WARP_PEER_PUBLIC_KEY_JSON=$(printf '%s' "$WARP_PEER_PUBLIC_KEY" | jq -Rs .)
 
     jq \
         --arg sni "$VLESS_SNI" \
         --arg private_key "$REALITY_PRIVATE_KEY" \
         --arg short_id "$REALITY_SHORT_ID" \
-        --arg warp_private_key "$WARP_PRIVATE_KEY" \
+        --arg warp_private_key "$WARP_PRIVATE_KEY_JSON" \
         --argjson warp_addresses "$WARP_ADDRESSES_JSON" \
-        --arg warp_peer_public_key "$WARP_PEER_PUBLIC_KEY" \
+        --arg warp_peer_public_key "$WARP_PEER_PUBLIC_KEY_JSON" \
         --arg warp_endpoint_host "$WARP_ENDPOINT_HOST" \
         --argjson warp_endpoint_port "$WARP_ENDPOINT_PORT" \
         '(.inbounds[] | select(.type == "vless").listen_port) = 443 |
@@ -176,9 +177,9 @@ if [ -f vless/config.json ]; then
          (.inbounds[] | select(.type == "vless").tls.reality.handshake.server) = $sni |
          (.inbounds[] | select(.type == "vless").tls.reality.private_key) = $private_key |
          (.inbounds[] | select(.type == "vless").tls.reality.short_id) = $short_id |
-         (.endpoints[] | select(.type == "wireguard" and .tag == "warp-out").private_key) = $warp_private_key |
+         (.endpoints[] | select(.type == "wireguard" and .tag == "warp-out").private_key) = ($warp_private_key | fromjson) |
          (.endpoints[] | select(.type == "wireguard" and .tag == "warp-out").address) = $warp_addresses |
-         (.endpoints[] | select(.type == "wireguard" and .tag == "warp-out").peers[0].public_key) = $warp_peer_public_key |
+         (.endpoints[] | select(.type == "wireguard" and .tag == "warp-out").peers[0].public_key) = ($warp_peer_public_key | fromjson) |
          (.endpoints[] | select(.type == "wireguard" and .tag == "warp-out").peers[0].address) = $warp_endpoint_host |
          (.endpoints[] | select(.type == "wireguard" and .tag == "warp-out").peers[0].port) = $warp_endpoint_port' \
         vless/config.json > /etc/sing-box/config.json
