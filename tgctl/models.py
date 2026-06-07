@@ -83,7 +83,7 @@ class ServerConfig:
     def from_dict(cls, data: Dict[str, Any]) -> 'ServerConfig':
         return cls(
             domain=data.get('domain', ''),
-            port=data.get('port', '443'),
+            port=data.get('port', '6443'),
             public_key=data.get('public_key', ''),
             short_id=data.get('short_id', ''),
             vless_sni=data.get('vless_sni', '')
