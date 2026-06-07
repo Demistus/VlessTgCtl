@@ -171,7 +171,7 @@ if [ -f vless/config.json ]; then
         --arg warp_peer_public_key "$WARP_PEER_PUBLIC_KEY" \
         --arg warp_endpoint_host "$WARP_ENDPOINT_HOST" \
         --argjson warp_endpoint_port "$WARP_ENDPOINT_PORT" \
-        '(.inbounds[] | select(.type == "vless").listen_port) = 443 |
+        '(.inbounds[] | select(.type == "vless").listen_port) = 6443 |
          (.inbounds[] | select(.type == "vless").tls.server_name) = $sni |
          (.inbounds[] | select(.type == "vless").tls.reality.handshake.server) = $sni |
          (.inbounds[] | select(.type == "vless").tls.reality.private_key) = $private_key |
