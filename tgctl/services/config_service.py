@@ -63,7 +63,7 @@ class ConfigGenerator:
                     "tls": {
                         "enabled": True,
                         "server_name": self.server.vless_sni,
-                        "utls": {"enabled": True, "fingerprint": "chrome"},
+                        "utls": {"enabled": True, "fingerprint": "qq"},
                         "reality": {
                             "enabled": True,
                             "public_key": self.server.public_key,
