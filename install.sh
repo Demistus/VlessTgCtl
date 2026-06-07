@@ -73,7 +73,6 @@ echo "Введите домен сервера (например vpn.example.com
 read -r SERVER_DOMAIN </dev/tty
 echo "Введите SNI для REALITY [www.microsoft.com]:"
 read -r VLESS_SNI </dev/tty
-VLESS_SNI=${VLESS_SNI:-www.microsoft.com}
 VLESS_PORT=443
 
 if [ -z "$SERVER_DOMAIN" ]; then
