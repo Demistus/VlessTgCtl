@@ -1,6 +1,7 @@
 import json
 from io import BytesIO
 from typing import Dict, Any
+from urllib.parse import quote, urlencode
 import qrcode
 from models import Platform, ServerConfig
 from config import Config
@@ -8,6 +9,7 @@ from config import Config
 
 class ConfigGenerator:
     """Generate client configurations"""
+    CLIENT_FINGERPRINT = "qq"
     
     def __init__(self, server_config: ServerConfig):
         self.server = server_config
@@ -63,7 +65,7 @@ class ConfigGenerator:
                     "tls": {
                         "enabled": True,
                         "server_name": self.server.vless_sni,
-                        "utls": {"enabled": True, "fingerprint": "qq"},
+                        "utls": {"enabled": True, "fingerprint": self.CLIENT_FINGERPRINT},
                         "reality": {
                             "enabled": True,
                             "public_key": self.server.public_key,
@@ -95,13 +97,17 @@ class ConfigGenerator:
     
     def generate_vless_link(self, username: str, user_uuid: str) -> str:
         """Generate VLESS link for QR code"""
-        return (
-            f"vless://{user_uuid}@{self.server.domain}:{self.server.port}"
-            f"?encryption=none&security=reality&flow=xtls-rprx-vision"
-            f"&type=tcp&sni={self.server.vless_sni}"
-            f"&pbk={self.server.public_key}&sid={self.server.short_id}"
-            f"&fp=chrome#{username}"
-        )
+        query = urlencode({
+            "encryption": "none",
+            "security": "reality",
+            "flow": "xtls-rprx-vision",
+            "type": "tcp",
+            "sni": self.server.vless_sni,
+            "pbk": self.server.public_key,
+            "sid": self.server.short_id,
+            "fp": self.CLIENT_FINGERPRINT,
+        })
+        return f"vless://{quote(user_uuid, safe='')}@{self.server.domain}:{self.server.port}?{query}#{quote(username, safe='')}"
     
     @staticmethod
     def generate_qr_code(data: str) -> BytesIO:

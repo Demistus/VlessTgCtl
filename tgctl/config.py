@@ -42,7 +42,7 @@ class Config:
     
     # Server defaults
     DEFAULT_DOMAIN: str = os.getenv("SERVER_DOMAIN", "")
-    DEFAULT_PORT: str = os.getenv("VLESS_LISTEN_PORT", "6443")
+    DEFAULT_PORT: str = os.getenv("VLESS_LISTEN_PORT", os.getenv("VLESS_PORT", "6443"))
     DEFAULT_PUBLIC_KEY: str = os.getenv("REALITY_PUBLIC_KEY", "")
     DEFAULT_VLESS_SNI: str = os.getenv("VLESS_SNI", "www.microsoft.com")
     
