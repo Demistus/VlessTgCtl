@@ -52,11 +52,11 @@
 			"users": [],
 			"tls": {
 				"enabled": true,
-				"server_name": "www.microsoft.com",
+				"server_name": "REPLACE_WITH_SERVER_NAME_FROM_TTY",
 				"reality": {
 					"enabled": true,
 					"handshake": {
-						"server": "www.microsoft.com",
+						"server": "REPLACE_WITH_REALITY_SERVER_NAME_FROM_TTY",
 						"server_port": 443
 					},
 					"private_key": "REPLACE_WITH_INSTALLER_GENERATED_REALITY_PRIVATE_KEY",
