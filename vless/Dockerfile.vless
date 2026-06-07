@@ -19,6 +19,6 @@ COPY --from=builder /sing-box/sing-box /usr/local/bin/sing-box
 
 RUN mkdir -p /etc/sing-box /var/lib/sing-box /var/log/sing-box
 
-EXPOSE 443 8443 9090
+EXPOSE 6443 9090
 
 ENTRYPOINT ["sing-box", "run", "-c", "/etc/sing-box/config.json"]

@@ -73,7 +73,9 @@ echo "Введите домен сервера (например vpn.example.com
 read -r SERVER_DOMAIN </dev/tty
 echo "Введите SNI для REALITY [www.microsoft.com]:"
 read -r VLESS_SNI </dev/tty
-VLESS_PORT=443
+# Empty SNI breaks REALITY server_name and handshake target; keep the advertised default.
+VLESS_SNI=${VLESS_SNI:-www.microsoft.com}
+VLESS_LISTEN_PORT=6443
 
 if [ -z "$SERVER_DOMAIN" ]; then
     echo -e "${RED}❌ SERVER_DOMAIN не может быть пустым${NC}"
@@ -84,7 +86,7 @@ cat > .env << ENV_EOF
 BOT_TOKEN=$BOT_TOKEN
 ADMIN_IDS=$ADMIN_IDS
 SERVER_DOMAIN=$SERVER_DOMAIN
-VLESS_PORT=$VLESS_PORT
+VLESS_LISTEN_PORT=$VLESS_LISTEN_PORT
 VLESS_SNI=$VLESS_SNI
 ENV_EOF
 
@@ -163,6 +165,7 @@ if [ -f vless/config.json ]; then
     WARP_ADDRESSES_JSON=$(printf "%s" "$WARP_ADDRESSES" | jq -R 'split(",") | map(gsub("^[[:space:]]+|[[:space:]]+$"; ""))')
 
     jq \
+        --argjson vless_listen_port "$VLESS_LISTEN_PORT" \
         --arg sni "$VLESS_SNI" \
         --arg private_key "$REALITY_PRIVATE_KEY" \
         --arg short_id "$REALITY_SHORT_ID" \
@@ -171,7 +174,7 @@ if [ -f vless/config.json ]; then
         --arg warp_peer_public_key "$WARP_PEER_PUBLIC_KEY" \
         --arg warp_endpoint_host "$WARP_ENDPOINT_HOST" \
         --argjson warp_endpoint_port "$WARP_ENDPOINT_PORT" \
-        '(.inbounds[] | select(.type == "vless").listen_port) = 6443 |
+        '(.inbounds[] | select(.type == "vless").listen_port) = $vless_listen_port |
          (.inbounds[] | select(.type == "vless").tls.server_name) = $sni |
          (.inbounds[] | select(.type == "vless").tls.reality.handshake.server) = $sni |
          (.inbounds[] | select(.type == "vless").tls.reality.private_key) = $private_key |
