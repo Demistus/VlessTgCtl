@@ -88,9 +88,11 @@ class TrafficStatsService:
             if last_ts == 0:
                 status = "Нет данных"
                 status_emoji = "⚪"
+                last_seen = "-"
             else:
                 minutes_ago = (now - last_ts) // 60
-                
+                last_seen = datetime.fromtimestamp(last_ts).strftime("%d.%m %H:%M")
+
                 if minutes_ago < 5:
                     status = "Онлайн"
                     status_emoji = "🟢"
@@ -112,7 +114,9 @@ class TrafficStatsService:
                 'download': stat.download,
                 'total': stat.total,
                 'status': status,
-                'status_emoji': status_emoji
+                'status_emoji': status_emoji,
+                'last_seen': last_seen,
+                'last_seen_ts': last_ts
             })
         
         return active_users

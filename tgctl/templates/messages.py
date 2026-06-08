@@ -147,11 +147,12 @@ class Messages:
             username = user['username'][:9].ljust(max_name_len)
             total = format_bytes(user['total']).rjust(max_traffic_len)
             status = user['status']
+            last_seen = user.get('last_seen', '-')
             
             if status == "Онлайн":
-                text += f"{status_emoji} {username} {total} | Онлайн\n"
+                text += f"{status_emoji} {username} {total} | Онлайн | {last_seen}\n"
             else:
-                text += f"{status_emoji} {username} {total} | {status}\n"
+                text += f"{status_emoji} {username} {total} | {status} | {last_seen}\n"
         
         text += "</code>"
         return text

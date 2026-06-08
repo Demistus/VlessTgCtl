@@ -11,9 +11,11 @@ MAP_FILE="/opt/vlesstgctl/stats/ip_user_map.txt"
 NFT_STATE_FILE="/opt/vlesstgctl/stats/user_nft_state.txt"
 TOTAL_STATE_FILE="/opt/vlesstgctl/stats/user_total_state.txt"
 LAST_ACTIVE_FILE="/opt/vlesstgctl/stats/user_last_active.txt"
+MAP_TTL_SECONDS=1800
+CURRENT_TS=$(date +%s)
 
 # === 1. ПОЛУЧАЕМ ЛОГИ И ОЧИЩАЕМ ANSI ===
-LOGS=$(docker logs sing-box --tail 5000 2>&1 | sed -E 's/\x1b\[[0-9;]*m//g')
+LOGS=$(docker logs sing-box --since 10m --tail 5000 2>&1 | sed -E 's/\x1b\[[0-9;]*m//g')
 
 # === 2. МАППИНГ IP -> USER ПО ID ===
 declare -A ID_TO_IP
@@ -38,27 +40,41 @@ while IFS= read -r line; do
 done <<< "$LOGS"
 
 declare -A IP_TO_USER
+declare -A IP_TO_SEEN
 for id in "${!ID_TO_IP[@]}"; do
     ip="${ID_TO_IP[$id]}"
     # ИСПРАВЛЕНО: проверяем существование ключа с :- синтаксисом
     user="${ID_TO_USER[$id]:-}"
     if [[ -n "$ip" && -n "$user" ]]; then
         IP_TO_USER["$ip"]="$user"
+        IP_TO_SEEN["$ip"]="$CURRENT_TS"
     fi
 done
 
 if [[ -f "$MAP_FILE" ]]; then
-    while IFS=':' read -r ip user; do
-        # ИСПРАВЛЕНО: используем безопасную проверку
-        if [[ -z "${IP_TO_USER[$ip]:-}" ]]; then
-            IP_TO_USER["$ip"]="$user"
+    while IFS=':' read -r ip user seen_at _; do
+        seen_at="${seen_at:-0}"
+        if [[ "$seen_at" =~ ^[0-9]+$ ]] && (( CURRENT_TS - seen_at <= MAP_TTL_SECONDS )); then
+            # ИСПРАВЛЕНО: используем безопасную проверку
+            if [[ -z "${IP_TO_USER[$ip]:-}" ]]; then
+                IP_TO_USER["$ip"]="$user"
+                IP_TO_SEEN["$ip"]="$seen_at"
+            fi
         fi
     done < "$MAP_FILE"
 fi
 
+declare -A EXPECTED_CHAINS
+for ip in "${!IP_TO_USER[@]}"; do
+    user="${IP_TO_USER[$ip]}"
+    ip_clean="${ip//./_}"
+    EXPECTED_CHAINS["traffic_in_${user}_${ip_clean}"]=1
+    EXPECTED_CHAINS["traffic_out_${user}_${ip_clean}"]=1
+done
+
 > "$MAP_FILE"
 for ip in "${!IP_TO_USER[@]}"; do
-    echo "$ip:${IP_TO_USER[$ip]}" >> "$MAP_FILE"
+    echo "$ip:${IP_TO_USER[$ip]}:${IP_TO_SEEN[$ip]:-$CURRENT_TS}" >> "$MAP_FILE"
 done
 
 # === 2.5. ОЧИСТКА СТАРЫХ ЦЕПОЧЕК ===
@@ -67,15 +83,9 @@ if /usr/sbin/nft list tables inet 2>/dev/null | grep -q "^table inet traffic$"; 
     ALL_CHAINS=$(/usr/sbin/nft list chains inet traffic 2>/dev/null | grep -oP 'traffic_(in|out)_[^\s]+' || true)
     
     for chain in $ALL_CHAINS; do
-        # Извлекаем IP из имени цепочки
-        suffix="${chain##*_}"
-        ip_candidate=$(echo "$suffix" | tr '_' '.')
-        
-        if [[ "$ip_candidate" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            if [[ -z "${IP_TO_USER[$ip_candidate]:-}" ]]; then
-                /usr/sbin/nft delete chain inet traffic "$chain" 2>/dev/null && \
-                    echo "Deleted old chain: $chain" >> /tmp/traffic_nft_cleanup.log
-            fi
+        if [[ -z "${EXPECTED_CHAINS[$chain]:-}" ]]; then
+            /usr/sbin/nft delete chain inet traffic "$chain" 2>/dev/null && \
+                echo "Deleted old chain: $chain" >> /tmp/traffic_nft_cleanup.log
         fi
     done
 fi
@@ -204,7 +214,7 @@ if [[ -f "$LAST_ACTIVE_FILE" ]]; then
     # ИСПРАВЛЕНО: убираем вложенный flock, используем простой подход
     while IFS=':' read -r user ts; do
         if [[ -n "${HAD_ACTIVITY[$user]:-}" ]]; then
-            echo "$user:$(date +%s)" >> "$TEMP_LAST"
+            echo "$user:$CURRENT_TS" >> "$TEMP_LAST"
         else
             echo "$user:$ts" >> "$TEMP_LAST"
         fi
@@ -213,7 +223,9 @@ fi
 
 for user in "${!NEW_TOTAL_UP[@]}"; do
     if ! grep -q "^$user:" "$TEMP_LAST" 2>/dev/null; then
-        echo "$user:$(date +%s)" >> "$TEMP_LAST"
+        if [[ -n "${HAD_ACTIVITY[$user]:-}" ]]; then
+            echo "$user:$CURRENT_TS" >> "$TEMP_LAST"
+        fi
     fi
 done
 
