@@ -190,6 +190,22 @@ for user in "${!CURRENT_NFT_UP[@]}"; do
     fi
 done
 
+# Сохраняем пользователей без текущих nft-цепочек, чтобы они не пропадали
+# из traffic.json и админка могла показать их последний last_seen.
+for user in "${!TOTAL_UP[@]}"; do
+    if [[ -z "${NEW_TOTAL_UP[$user]:-}" ]]; then
+        NEW_TOTAL_UP["$user"]="${TOTAL_UP[$user]:-0}"
+        NEW_TOTAL_DOWN["$user"]="${TOTAL_DOWN[$user]:-0}"
+    fi
+done
+
+for user in "${!TOTAL_DOWN[@]}"; do
+    if [[ -z "${NEW_TOTAL_DOWN[$user]:-}" ]]; then
+        NEW_TOTAL_UP["$user"]="${TOTAL_UP[$user]:-0}"
+        NEW_TOTAL_DOWN["$user"]="${TOTAL_DOWN[$user]:-0}"
+    fi
+done
+
 # === 8. СОХРАНЯЕМ СОСТОЯНИЯ NFT ===
 TEMP_NFT_STATE="${NFT_STATE_FILE}.tmp"
 > "$TEMP_NFT_STATE"
