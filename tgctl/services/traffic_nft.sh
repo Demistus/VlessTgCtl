@@ -64,31 +64,13 @@ if [[ -f "$MAP_FILE" ]]; then
     done < "$MAP_FILE"
 fi
 
-declare -A EXPECTED_CHAINS
-for ip in "${!IP_TO_USER[@]}"; do
-    user="${IP_TO_USER[$ip]}"
-    ip_clean="${ip//./_}"
-    EXPECTED_CHAINS["traffic_in_${user}_${ip_clean}"]=1
-    EXPECTED_CHAINS["traffic_out_${user}_${ip_clean}"]=1
-done
-
 > "$MAP_FILE"
 for ip in "${!IP_TO_USER[@]}"; do
     echo "$ip:${IP_TO_USER[$ip]}:${IP_TO_SEEN[$ip]:-$CURRENT_TS}" >> "$MAP_FILE"
 done
 
-# === 2.5. ОЧИСТКА СТАРЫХ ЦЕПОЧЕК ===
-# Проверяем существование таблицы
-if /usr/sbin/nft list tables inet 2>/dev/null | grep -q "^table inet traffic$"; then
-    ALL_CHAINS=$(/usr/sbin/nft list chains inet traffic 2>/dev/null | grep -oP 'traffic_(in|out)_[^\s]+' || true)
-    
-    for chain in $ALL_CHAINS; do
-        if [[ -z "${EXPECTED_CHAINS[$chain]:-}" ]]; then
-            /usr/sbin/nft delete chain inet traffic "$chain" 2>/dev/null && \
-                echo "Deleted old chain: $chain" >> /tmp/traffic_nft_cleanup.log
-        fi
-    done
-fi
+# Старые цепочки не удаляем: их nft-счетчики являются источником данных
+# для админки, даже если IP уже выпал из свежих логов или map-файла.
 
 # === 3. NFT: СОЗДАЁМ ТАБЛИЦУ И ЦЕПОЧКИ ===
 if ! /usr/sbin/nft list table inet traffic >/dev/null 2>&1; then
@@ -134,41 +116,57 @@ if [[ -f "$TOTAL_STATE_FILE" ]]; then
     done < "$TOTAL_STATE_FILE"
 fi
 
-# === 6. СБОР ТЕКУЩИХ ПОКАЗАНИЙ ИЗ NFT ===
+# === 6. СБОР ВСЕХ ТЕКУЩИХ ПОКАЗАНИЙ ИЗ NFT ===
 declare -A CURRENT_NFT_UP
 declare -A CURRENT_NFT_DOWN
 
-for ip in "${!IP_TO_USER[@]}"; do
-    user="${IP_TO_USER[$ip]}"
-    ip_clean="${ip//./_}"
-    chain_in="traffic_in_${user}_${ip_clean}"
-    chain_out="traffic_out_${user}_${ip_clean}"
-    
-    up=0
-    down=0
-    
-    in_rule=$(/usr/sbin/nft list chain inet traffic "$chain_in" 2>/dev/null | grep "ip saddr $ip" || true)
-    if [[ -n "$in_rule" && "$in_rule" =~ bytes\ ([0-9]+) ]]; then
-        up="${BASH_REMATCH[1]}"
+NFT_TABLE=$(/usr/sbin/nft list table inet traffic 2>/dev/null || true)
+current_chain=""
+current_user=""
+current_direction=""
+
+while IFS= read -r line; do
+    if [[ "$line" =~ ^[[:space:]]*chain[[:space:]]+(traffic_(in|out)_(.+)_([0-9]+_[0-9]+_[0-9]+_[0-9]+))[[:space:]]*\{ ]]; then
+        current_chain="${BASH_REMATCH[1]}"
+        current_direction="${BASH_REMATCH[2]}"
+        current_user="${BASH_REMATCH[3]}"
+        continue
     fi
-    
-    out_rule=$(/usr/sbin/nft list chain inet traffic "$chain_out" 2>/dev/null | grep "ip daddr $ip" || true)
-    if [[ -n "$out_rule" && "$out_rule" =~ bytes\ ([0-9]+) ]]; then
-        down="${BASH_REMATCH[1]}"
+
+    if [[ "$line" =~ ^[[:space:]]*\} ]]; then
+        current_chain=""
+        current_user=""
+        current_direction=""
+        continue
     fi
-    
-    CURRENT_NFT_UP["$user"]=$(( ${CURRENT_NFT_UP["$user"]:-0} + up ))
-    CURRENT_NFT_DOWN["$user"]=$(( ${CURRENT_NFT_DOWN["$user"]:-0} + down ))
-done
+
+    if [[ -n "$current_chain" && "$line" =~ counter[[:space:]]+packets[[:space:]]+[0-9]+[[:space:]]+bytes[[:space:]]+([0-9]+) ]]; then
+        bytes="${BASH_REMATCH[1]}"
+        if [[ "$current_direction" == "in" ]]; then
+            CURRENT_NFT_UP["$current_user"]=$(( ${CURRENT_NFT_UP["$current_user"]:-0} + bytes ))
+        else
+            CURRENT_NFT_DOWN["$current_user"]=$(( ${CURRENT_NFT_DOWN["$current_user"]:-0} + bytes ))
+        fi
+    fi
+done <<< "$NFT_TABLE"
 
 # === 7. СЧИТАЕМ ПРИРОСТ И ОБНОВЛЯЕМ ОБЩИЙ ТРАФИК ===
 declare -A NEW_TOTAL_UP
 declare -A NEW_TOTAL_DOWN
 declare -A HAD_ACTIVITY
+declare -A CURRENT_USERS
 
 for user in "${!CURRENT_NFT_UP[@]}"; do
-    current_up="${CURRENT_NFT_UP[$user]}"
-    current_down="${CURRENT_NFT_DOWN[$user]}"
+    CURRENT_USERS["$user"]=1
+done
+
+for user in "${!CURRENT_NFT_DOWN[@]}"; do
+    CURRENT_USERS["$user"]=1
+done
+
+for user in "${!CURRENT_USERS[@]}"; do
+    current_up="${CURRENT_NFT_UP[$user]:-0}"
+    current_down="${CURRENT_NFT_DOWN[$user]:-0}"
     
     prev_up="${PREV_NFT_UP[$user]:-0}"
     prev_down="${PREV_NFT_DOWN[$user]:-0}"
@@ -209,8 +207,22 @@ done
 # === 8. СОХРАНЯЕМ СОСТОЯНИЯ NFT ===
 TEMP_NFT_STATE="${NFT_STATE_FILE}.tmp"
 > "$TEMP_NFT_STATE"
-for user in "${!CURRENT_NFT_UP[@]}"; do
-    echo "$user:${CURRENT_NFT_UP[$user]}:${CURRENT_NFT_DOWN[$user]}" >> "$TEMP_NFT_STATE"
+
+declare -A STATE_USERS
+for user in "${!CURRENT_USERS[@]}"; do
+    STATE_USERS["$user"]=1
+done
+
+for user in "${!PREV_NFT_UP[@]}"; do
+    STATE_USERS["$user"]=1
+done
+
+for user in "${!PREV_NFT_DOWN[@]}"; do
+    STATE_USERS["$user"]=1
+done
+
+for user in "${!STATE_USERS[@]}"; do
+    echo "$user:${CURRENT_NFT_UP[$user]:-${PREV_NFT_UP[$user]:-0}}:${CURRENT_NFT_DOWN[$user]:-${PREV_NFT_DOWN[$user]:-0}}" >> "$TEMP_NFT_STATE"
 done
 mv "$TEMP_NFT_STATE" "$NFT_STATE_FILE"
 
