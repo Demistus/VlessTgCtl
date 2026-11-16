@@ -1,7 +1,7 @@
 {
 	"log": {
-		"disabled": true,
-		"level": "debug",
+		"disabled": false,
+		"level": "info",
 		"timestamp": true
 	},
 	"experimental": {
